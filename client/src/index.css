@@ -1,0 +1,151 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-display: 'Syne', system-ui, sans-serif;
+  --font-sans: 'Outfit', system-ui, sans-serif;
+  --color-ink: #14181f;
+  --color-mist: #e8eef5;
+  --color-fog: #c5d2e0;
+  --color-coral: #ff4d4d;
+  --color-coral-deep: #e03535;
+  --color-amber: #ffb020;
+  --color-teal: #12b5a0;
+  --color-teal-deep: #0a8f7e;
+  --color-slate: #4a5568;
+  --color-paper: #f4f7fb;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background:
+      radial-gradient(ellipse 90% 60% at 10% -10%, #ffd6a8 0%, transparent 55%),
+      radial-gradient(ellipse 70% 50% at 100% 0%, #9fe8d8 0%, transparent 50%),
+      radial-gradient(ellipse 60% 40% at 50% 110%, #a8c4ff 0%, transparent 55%),
+      linear-gradient(165deg, #f4f7fb 0%, #e8eef5 45%, #dde6f0 100%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button {
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .stage-panel {
+    background: color-mix(in srgb, white 78%, transparent);
+    backdrop-filter: blur(12px);
+    border: 1px solid color-mix(in srgb, var(--color-fog) 70%, transparent);
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-coral px-5 py-3 font-semibold text-white transition;
+    box-shadow: 0 4px 0 color-mix(in srgb, var(--color-coral-deep) 90%, black);
+  }
+  .btn-primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--color-coral-deep) 90%, black);
+  }
+  .btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border-2 border-ink/15 bg-white/70 px-5 py-3 font-semibold text-ink transition hover:border-ink/30 hover:bg-white;
+  }
+
+  .btn-teal {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-teal px-5 py-3 font-semibold text-white transition;
+    box-shadow: 0 4px 0 var(--color-teal-deep);
+  }
+
+  .field {
+    @apply w-full rounded-xl border-2 border-ink/10 bg-white/90 px-4 py-3 text-base outline-none transition focus:border-teal;
+  }
+
+  .label {
+    @apply mb-1.5 block text-sm font-semibold tracking-wide text-slate uppercase;
+  }
+}
+
+@keyframes bar-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@keyframes face-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(2deg);
+  }
+}
+
+@keyframes curtain-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes timer-urgent {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.animate-curtain {
+  animation: curtain-in 0.45s ease-out both;
+}
+
+.animate-face {
+  animation: face-bob 2.4s ease-in-out infinite;
+}
+
+.animate-urgent {
+  animation: timer-urgent 0.6s ease-in-out infinite;
+}
