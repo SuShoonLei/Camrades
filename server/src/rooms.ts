@@ -9,8 +9,20 @@ import type {
   WordSubmission,
 } from '../../shared/types.js';
 import { buildCandidatePool } from './decoys.js';
+import {
+  addAudienceAceAward,
+  buildWordResult,
+  computeAwards,
+  emptyLiveStats,
+  type LiveWordStats,
+} from './awards.js';
 
 const rooms = new Map<string, Room>();
+
+/** Per-room live stats for the current word */
+export const liveWordStats = new Map<string, LiveWordStats>();
+/** playerId -> beat-the-AI count this game */
+export const audienceBeatCounts = new Map<string, Map<string, number>>();
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -28,7 +40,10 @@ export function getRoom(code: string): Room | undefined {
 }
 
 export function deleteRoom(code: string): void {
-  rooms.delete(code.toUpperCase());
+  const c = code.toUpperCase();
+  rooms.delete(c);
+  liveWordStats.delete(c);
+  audienceBeatCounts.delete(c);
 }
 
 export function createRoom(hostName: string): { room: Room; player: Player } {
@@ -42,6 +57,7 @@ export function createRoom(hostName: string): { room: Room; player: Player } {
     name: `${hostName}'s Team`,
     playerIds: [hostId],
     score: 0,
+    audienceBonus: 0,
     ready: false,
   };
   const player: Player = { id: hostId, name: hostName.trim(), teamId };
@@ -61,13 +77,17 @@ export function createRoom(hostName: string): { room: Room; player: Player } {
       turnDurationSec: 90,
       wordsPerTeam: 5,
       roundsPerTeam: 1,
+      aiDifficulty: 'standard',
     },
     completedTurnTeamIds: [],
     usedCandidateTexts: [],
+    allWordResults: [],
+    awards: [],
     lastTurnResult: null,
   };
 
   rooms.set(code, room);
+  audienceBeatCounts.set(code, new Map());
   return { room, player };
 }
 
@@ -86,12 +106,10 @@ export function allTeamsValid(room: Room): boolean {
 }
 
 export function roomIsFull(room: Room): boolean {
-  // Soft cap: 6 teams × 3 players
   const total = Object.keys(room.players).length;
   return total >= 18;
 }
 
-/** Fisher–Yates shuffle */
 export function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -101,10 +119,6 @@ export function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-/**
- * Random derangement: performingTeam[i] -> sourceTeam[shuffled[i]],
- * retrying until no team maps to itself. For 1 team, maps to itself (practice).
- */
 export function computeAssignment(teamIds: string[]): Assignment {
   if (teamIds.length === 0) return {};
   if (teamIds.length === 1) {
@@ -125,7 +139,6 @@ export function computeAssignment(teamIds: string[]): Assignment {
     if (ok) return assignment;
   }
 
-  // Deterministic fallback: rotate by 1
   const assignment: Assignment = {};
   for (let i = 0; i < teamIds.length; i++) {
     assignment[teamIds[i]!] = teamIds[(i + 1) % teamIds.length]!;
@@ -135,6 +148,44 @@ export function computeAssignment(teamIds: string[]): Assignment {
 
 export function allSubmittedWords(room: Room): Word[] {
   return room.submissions.flatMap((s) => s.words);
+}
+
+function currentActorId(turn: NonNullable<Room['currentTurn']>): string {
+  if (turn.actorRotation.length === 0) return '';
+  return (
+    turn.actorRotation[turn.currentWordIndex % turn.actorRotation.length] ?? ''
+  );
+}
+
+export function resetWordStats(roomCode: string): void {
+  liveWordStats.set(roomCode.toUpperCase(), emptyLiveStats());
+}
+
+export function recordCurrentWordResult(
+  room: Room,
+  correct: boolean,
+  resolvedAt = Date.now(),
+): void {
+  const turn = room.currentTurn;
+  if (!turn) return;
+  const word = turn.assignedWords[turn.currentWordIndex];
+  if (!word) return;
+  // Already recorded for this index
+  if (turn.wordHistory.length > turn.currentWordIndex) return;
+
+  const stats =
+    liveWordStats.get(room.code) ??
+    emptyLiveStats(turn.wordStartedAt ?? Date.now());
+  const result = buildWordResult({
+    word,
+    actorId: currentActorId(turn),
+    teamId: turn.teamId,
+    correct,
+    stats,
+    resolvedAt,
+  });
+  turn.wordHistory.push(result);
+  room.allWordResults.push(result);
 }
 
 export function startTurnForTeam(room: Room, teamId: string): void {
@@ -154,6 +205,7 @@ export function startTurnForTeam(room: Room, teamId: string): void {
   for (const w of candidatePool) used.add(w.text.trim().toLowerCase());
   room.usedCandidateTexts = [...used];
 
+  const now = Date.now();
   room.currentTurn = {
     teamId,
     assignedWords,
@@ -161,15 +213,19 @@ export function startTurnForTeam(room: Room, teamId: string): void {
     actorRotation: [...team.playerIds],
     candidatePool,
     aiScores: Object.fromEntries(candidatePool.map((w) => [w.text, 0])),
-    startedAt: Date.now(),
+    startedAt: now,
+    wordStartedAt: now,
     durationSec: room.settings.turnDurationSec,
     correctCount: 0,
     status: 'active',
     revealing: false,
     solvedWords: [],
+    wordHistory: [],
+    audienceGuesses: [],
   };
   room.phase = 'in-round';
   room.lastTurnResult = null;
+  resetWordStats(room.code);
 }
 
 export function advanceToNextWord(room: Room): void {
@@ -198,11 +254,38 @@ export function advanceToNextWord(room: Room): void {
   turn.aiScores = Object.fromEntries(
     turn.candidatePool.map((w) => [w.text, 0]),
   );
+  turn.wordStartedAt = Date.now();
+  resetWordStats(room.code);
 }
 
 export function endTurn(room: Room): void {
   const turn = room.currentTurn;
   if (!turn || turn.status === 'ended') return;
+
+  // Record timed-out current word if still live and not yet recorded
+  if (
+    turn.currentWordIndex < turn.assignedWords.length &&
+    turn.wordHistory.length === turn.currentWordIndex
+  ) {
+    recordCurrentWordResult(room, false);
+  }
+
+  // Any remaining unstarted words
+  while (turn.wordHistory.length < turn.assignedWords.length) {
+    const idx = turn.wordHistory.length;
+    const word = turn.assignedWords[idx]!;
+    const actorId =
+      turn.actorRotation[idx % Math.max(1, turn.actorRotation.length)] ?? '';
+    const result = buildWordResult({
+      word,
+      actorId,
+      teamId: turn.teamId,
+      correct: false,
+      stats: emptyLiveStats(),
+    });
+    turn.wordHistory.push(result);
+    room.allWordResults.push(result);
+  }
 
   turn.status = 'ended';
   turn.revealing = false;
@@ -235,6 +318,9 @@ export function continueAfterSummary(room: Room): void {
   if (remaining.length === 0) {
     room.phase = 'game-over';
     room.currentTurn = null;
+    room.awards = computeAwards(room);
+    const beats = audienceBeatCounts.get(room.code) ?? new Map();
+    addAudienceAceAward(room, beats);
     return;
   }
 
@@ -266,7 +352,6 @@ export function removePlayerFromRoom(
     if (next) room.hostId = next;
   }
 
-  // Mid-turn: if actor left, hand off to next teammate still present
   if (
     room.phase === 'in-round' &&
     room.currentTurn?.status === 'active' &&
@@ -288,13 +373,6 @@ export function removePlayerFromRoom(
   return { emptied, actorChanged };
 }
 
-export function getSubmissionOrDraft(
-  room: Room,
-  teamId: string,
-): Word[] {
-  return room.draftWords[teamId] ?? [];
-}
-
 export function finalizeSubmissions(room: Room): void {
   room.submissions = room.teams.map((t) => ({
     teamId: t.id,
@@ -306,9 +384,13 @@ export function finalizeSubmissions(room: Room): void {
   room.turnOrder = shuffle(teamIds);
   room.completedTurnTeamIds = [];
   room.usedCandidateTexts = [];
+  room.allWordResults = [];
+  room.awards = [];
+  audienceBeatCounts.set(room.code, new Map());
   room.teams.forEach((t) => {
     t.ready = false;
     t.score = 0;
+    t.audienceBonus = 0;
   });
 
   if (room.turnOrder[0]) {

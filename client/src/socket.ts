@@ -78,3 +78,26 @@ export function continueAfterSummary(roomCode: string) {
     socket.emit('continueAfterSummary', { roomCode }, resolve);
   });
 }
+
+export function setDifficulty(
+  roomCode: string,
+  aiDifficulty: 'rookie' | 'standard' | 'veteran',
+) {
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    socket.emit('setDifficulty', { roomCode, aiDifficulty }, resolve);
+  });
+}
+
+export function submitAudienceGuess(
+  roomCode: string,
+  wordIndex: number,
+  guessText: string,
+) {
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    socket.emit(
+      'audienceGuess',
+      { roomCode, wordIndex, guessText },
+      resolve,
+    );
+  });
+}

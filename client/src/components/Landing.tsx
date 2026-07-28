@@ -32,7 +32,8 @@ export function Landing({ onCreate, onJoin, onOpenAiTest, busy, error }: Props) 
           <span className="text-coral">Charades</span>
         </h1>
         <p className="mx-auto mt-4 max-w-sm text-lg text-slate">
-          Act it out. The AI does the guessing — and it has opinions.
+          Act it out. <span className="font-semibold text-ink">Gawk</span> does
+          the guessing — and it has opinions.
         </p>
       </div>
 

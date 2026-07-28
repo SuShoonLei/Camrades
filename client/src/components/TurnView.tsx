@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Room } from '@shared/types';
+import { DIFFICULTY_CONFIG, type Room } from '@shared/types';
 import { loadAiModel, startGuessing } from '../ai/aiGuesser';
-import { sendAiScores } from '../socket';
+import { sendAiScores, submitAudienceGuess } from '../socket';
 import { AiThinkingBars } from './AiThinkingBars';
 import { Timer } from './Timer';
 
@@ -18,6 +18,11 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
   const [modelLoading, setModelLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [camError, setCamError] = useState<string | null>(null);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [guess, setGuess] = useState('');
+  const [guessError, setGuessError] = useState<string | null>(null);
+  const [guessBusy, setGuessBusy] = useState(false);
+  const [localGuessed, setLocalGuessed] = useState(false);
   const lastSend = useRef(0);
 
   const actorId =
@@ -31,6 +36,26 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
   const team = turn
     ? room.teams.find((t) => t.id === turn.teamId)
     : undefined;
+  const me = room.players[playerId];
+  const isAudience =
+    !!turn &&
+    !!me &&
+    me.teamId !== turn.teamId &&
+    turn.status === 'active' &&
+    !turn.revealing;
+  const alreadyGuessed =
+    localGuessed ||
+    (!!turn &&
+      turn.audienceGuesses.some(
+        (g) =>
+          g.playerId === playerId && g.wordIndex === turn.currentWordIndex,
+      ));
+
+  useEffect(() => {
+    setGuess('');
+    setGuessError(null);
+    setLocalGuessed(false);
+  }, [turn?.currentWordIndex]);
 
   useEffect(() => {
     if (
@@ -122,6 +147,26 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
   const isOnTeam = team?.playerIds.includes(playerId) ?? false;
   const scores =
     Object.keys(liveScores).length > 0 ? liveScores : turn.aiScores;
+  const threshold =
+    DIFFICULTY_CONFIG[room.settings.aiDifficulty]?.threshold ?? 0.55;
+
+  const submitGuess = async () => {
+    if (!guess.trim() || alreadyGuessed) return;
+    setGuessBusy(true);
+    setGuessError(null);
+    const res = await submitAudienceGuess(
+      room.code,
+      turn.currentWordIndex,
+      guess.trim(),
+    );
+    setGuessBusy(false);
+    if (!res.ok) {
+      setGuessError(res.error ?? 'Guess failed');
+      return;
+    }
+    setLocalGuessed(true);
+    setGuess('');
+  };
 
   return (
     <div className="mx-auto min-h-dvh max-w-3xl px-4 py-6 animate-curtain">
@@ -138,6 +183,20 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
         <div className="w-40 sm:w-48">
           <Timer secondsLeft={secondsLeft} total={turn.durationSec} />
         </div>
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2 text-xs font-semibold text-slate">
+        {room.teams.map((t) => (
+          <span key={t.id} className="rounded-lg bg-mist/80 px-2.5 py-1">
+            {t.name}: {t.score}
+            {t.audienceBonus > 0 && (
+              <span className="text-teal-deep">
+                {' '}
+                · audience +{t.audienceBonus}
+              </span>
+            )}
+          </span>
+        ))}
       </div>
 
       {turn.revealing && currentWord && (
@@ -160,7 +219,7 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
           </p>
         ) : (
           <p className="font-semibold">
-            Watching {team?.name} · actor: {actor?.name ?? '…'}
+            Watching {team?.name} · race Gawk if you dare
           </p>
         )}
       </div>
@@ -173,6 +232,43 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
           </p>
           <p className="mt-1 text-sm text-slate">{currentWord.category}</p>
         </div>
+      )}
+
+      {isAudience && (
+        <form
+          className="stage-panel mb-4 flex flex-col gap-2 rounded-2xl p-4 sm:flex-row sm:items-end"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitGuess();
+          }}
+        >
+          <div className="flex-1">
+            <label className="label" htmlFor="audienceGuess">
+              Think you know it? Type your guess.
+            </label>
+            <input
+              id="audienceGuess"
+              className="field"
+              value={guess}
+              disabled={alreadyGuessed || guessBusy}
+              onChange={(e) => setGuess(e.target.value)}
+              placeholder={alreadyGuessed ? 'Guess locked in' : 'one shot…'}
+              maxLength={40}
+            />
+          </div>
+          <button
+            type="submit"
+            className="btn-teal shrink-0"
+            disabled={alreadyGuessed || guessBusy || !guess.trim()}
+          >
+            {alreadyGuessed ? 'Submitted' : 'Guess'}
+          </button>
+          {guessError && (
+            <p className="w-full text-sm font-medium text-coral-deep">
+              {guessError}
+            </p>
+          )}
+        </form>
       )}
 
       {modelLoading && isActor && (
@@ -211,6 +307,9 @@ export function TurnView({ room, playerId, secondsLeft, liveScores }: Props) {
             hideLabels={!isActor && !turn.revealing}
             trueWord={currentWord?.text}
             revealing={turn.revealing}
+            threshold={threshold}
+            voiceEnabled={voiceOn}
+            onToggleVoice={setVoiceOn}
           />
         </div>
       </div>

@@ -4,19 +4,27 @@ import { Server, type Socket } from 'socket.io';
 import cors from 'cors';
 import { Filter } from 'bad-words';
 import { v4 as uuid } from 'uuid';
-import type { Category, Room, Word } from '../../shared/types.js';
+import type { AiDifficulty, Category, Room, Word } from '../../shared/types.js';
 import { CATEGORIES } from '../../shared/types.js';
 import {
   allTeamsValid,
+  audienceBeatCounts,
   continueAfterSummary,
   createRoom,
   endTurn,
   advanceToNextWord,
   getRoom,
+  liveWordStats,
+  recordCurrentWordResult,
   removePlayerFromRoom,
   roomIsFull,
   finalizeSubmissions,
 } from './rooms.js';
+import {
+  emptyLiveStats,
+  getDifficultyParams,
+  updateLiveStats,
+} from './awards.js';
 
 const profanity = new Filter();
 
@@ -108,6 +116,7 @@ io.on('connection', (socket: Socket) => {
           name: `${name}'s Team`,
           playerIds: [],
           score: 0,
+          audienceBonus: 0,
           ready: false,
         };
         room.teams.push(team);
@@ -160,6 +169,7 @@ io.on('connection', (socket: Socket) => {
         name: teamName,
         playerIds: [playerId],
         score: 0,
+        audienceBonus: 0,
         ready: false,
       });
       room.draftWords[teamId] = [];
@@ -214,6 +224,37 @@ io.on('connection', (socket: Socket) => {
 
       team.playerIds.push(playerId);
       player.teamId = team.id;
+      ack?.({ ok: true });
+      emitRoom(room);
+    },
+  );
+
+  socket.on(
+    'setDifficulty',
+    (
+      payload: { roomCode: string; aiDifficulty: AiDifficulty },
+      ack?: (res: { ok: boolean; error?: string }) => void,
+    ) => {
+      const room = getRoom(payload?.roomCode);
+      const playerId = data.playerId;
+      if (!room || !playerId) {
+        ack?.({ ok: false, error: 'Not in a room' });
+        return;
+      }
+      if (room.hostId !== playerId) {
+        ack?.({ ok: false, error: 'Only the host can set difficulty' });
+        return;
+      }
+      if (room.phase !== 'lobby') {
+        ack?.({ ok: false, error: 'Can only change difficulty in lobby' });
+        return;
+      }
+      const d = payload.aiDifficulty;
+      if (d !== 'rookie' && d !== 'standard' && d !== 'veteran') {
+        ack?.({ ok: false, error: 'Invalid difficulty' });
+        return;
+      }
+      room.settings.aiDifficulty = d;
       ack?.({ ok: true });
       emitRoom(room);
     },
@@ -371,7 +412,7 @@ io.on('connection', (socket: Socket) => {
     },
   );
 
-  // ——— Phase 4: turn / AI scores ———
+  // ——— Phase 4 / 6 / 7: turn, AI scores, audience ———
 
   socket.on(
     'aiScores',
@@ -388,7 +429,6 @@ io.on('connection', (socket: Socket) => {
         turn.actorRotation[
           turn.currentWordIndex % turn.actorRotation.length
         ];
-      // Only the current actor's scores count
       if (playerId !== actorId) return;
 
       turn.aiScores = payload.scores ?? {};
@@ -397,30 +437,70 @@ io.on('connection', (socket: Socket) => {
         wordIndex: turn.currentWordIndex,
       });
 
-      // Resolution: true word highest AND > 0.55 for 2 consecutive ticks
       const trueWord = turn.assignedWords[turn.currentWordIndex];
       if (!trueWord) return;
+
+      let stats = liveWordStats.get(room.code);
+      if (!stats) {
+        stats = emptyLiveStats(turn.wordStartedAt ?? Date.now());
+        liveWordStats.set(room.code, stats);
+      }
+      updateLiveStats(stats, turn.aiScores, trueWord.text);
+
+      const { threshold, holdTicks } = getDifficultyParams(
+        room.settings.aiDifficulty,
+      );
 
       const entries = Object.entries(turn.aiScores);
       if (entries.length === 0) return;
       const sorted = [...entries].sort((a, b) => b[1]! - a[1]!);
       const [topLabel, topScore] = sorted[0]!;
-      const isMatch = topLabel === trueWord.text && topScore >= 0.55;
+      const isMatch = topLabel === trueWord.text && topScore >= threshold;
       const hk = holdKey(room.code, turn.currentWordIndex);
 
       if (isMatch) {
         const next = (holdCounts.get(hk) ?? 0) + 1;
         holdCounts.set(hk, next);
-        if (next >= 2) {
+        if (next >= holdTicks) {
           holdCounts.delete(hk);
+          const resolvedAt = Date.now();
           turn.correctCount += 1;
           turn.solvedWords.push(trueWord);
           turn.revealing = true;
+
+          recordCurrentWordResult(room, true, resolvedAt);
+
+          // Mark audience guesses that beat the AI
+          const beatToasts: Array<{
+            playerName: string;
+            teamName: string;
+            marginSec: number;
+          }> = [];
+          for (const g of turn.audienceGuesses) {
+            if (g.wordIndex !== turn.currentWordIndex) continue;
+            if (g.correct && g.submittedAt < resolvedAt) {
+              g.beatTheAI = true;
+              const guessTeam = room.teams.find((t) => t.id === g.teamId);
+              if (guessTeam) guessTeam.audienceBonus += 1;
+              const beats = audienceBeatCounts.get(room.code) ?? new Map();
+              beats.set(g.playerId, (beats.get(g.playerId) ?? 0) + 1);
+              audienceBeatCounts.set(room.code, beats);
+              beatToasts.push({
+                playerName: room.players[g.playerId]?.name ?? 'Someone',
+                teamName: guessTeam?.name ?? 'a team',
+                marginSec: (resolvedAt - g.submittedAt) / 1000,
+              });
+            }
+          }
+
           emitRoom(room);
           io.to(room.code).emit('wordSolved', {
             word: trueWord,
             correctCount: turn.correctCount,
           });
+          for (const t of beatToasts) {
+            io.to(room.code).emit('audienceBeat', t);
+          }
 
           setTimeout(() => {
             const r = getRoom(room.code);
@@ -435,6 +515,82 @@ io.on('connection', (socket: Socket) => {
       } else {
         holdCounts.set(hk, 0);
       }
+    },
+  );
+
+  socket.on(
+    'audienceGuess',
+    (
+      payload: { roomCode: string; wordIndex: number; guessText: string },
+      ack?: (res: { ok: boolean; error?: string }) => void,
+    ) => {
+      const room = getRoom(payload?.roomCode);
+      const playerId = data.playerId;
+      if (!room || !playerId || !room.players[playerId]) {
+        ack?.({ ok: false, error: 'Not in a room' });
+        return;
+      }
+      const turn = room.currentTurn;
+      if (
+        !turn ||
+        room.phase !== 'in-round' ||
+        turn.status !== 'active' ||
+        turn.revealing
+      ) {
+        ack?.({ ok: false, error: 'No live word to guess' });
+        return;
+      }
+      if (payload.wordIndex !== turn.currentWordIndex) {
+        ack?.({ ok: false, error: 'Stale word index' });
+        return;
+      }
+
+      const player = room.players[playerId]!;
+      if (player.teamId === turn.teamId) {
+        ack?.({ ok: false, error: 'Performing team cannot audience-guess' });
+        return;
+      }
+
+      const already = turn.audienceGuesses.some(
+        (g) => g.playerId === playerId && g.wordIndex === payload.wordIndex,
+      );
+      if (already) {
+        ack?.({ ok: false, error: 'Already guessed this word' });
+        return;
+      }
+
+      const guessText = (payload.guessText ?? '').trim();
+      if (!guessText) {
+        ack?.({ ok: false, error: 'Empty guess' });
+        return;
+      }
+
+      const trueWord = turn.assignedWords[turn.currentWordIndex];
+      if (!trueWord) {
+        ack?.({ ok: false, error: 'No word' });
+        return;
+      }
+
+      const correct =
+        guessText.toLowerCase() === trueWord.text.trim().toLowerCase();
+
+      turn.audienceGuesses.push({
+        wordIndex: turn.currentWordIndex,
+        playerId,
+        teamId: player.teamId,
+        guessText,
+        submittedAt: Date.now(),
+        correct,
+        beatTheAI: false,
+      });
+
+      ack?.({ ok: true });
+      // Don't broadcast full room (would leak correctness); emit ack-only.
+      // Soft update without revealing guess correctness to others:
+      io.to(room.code).emit('audienceGuessPlaced', {
+        playerId,
+        wordIndex: turn.currentWordIndex,
+      });
     },
   );
 

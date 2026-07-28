@@ -13,6 +13,10 @@ export const CATEGORIES: Category[] = [
   'Occupations',
 ];
 
+export type AiDifficulty = 'rookie' | 'standard' | 'veteran';
+
+export const AI_NAME = 'Gawk';
+
 export type Player = {
   id: string;
   name: string;
@@ -24,6 +28,8 @@ export type Team = {
   name: string;
   playerIds: string[]; // 2 or 3
   score: number;
+  /** Bonus points from beating the AI as audience (separate track) */
+  audienceBonus: number;
   ready: boolean;
 };
 
@@ -37,6 +43,26 @@ export type WordSubmission = {
 /** performingTeamId -> sourceTeamId whose list they act out. No key equals its value (except 1-team practice). */
 export type Assignment = Record<string, string>;
 
+export type WordResult = {
+  word: Word;
+  actorId: string;
+  teamId: string;
+  correct: boolean;
+  timeToSolveSec: number | null;
+  peakTrueScore: number;
+  guessFlips: number;
+};
+
+export type AudienceGuess = {
+  wordIndex: number;
+  playerId: string;
+  teamId: string;
+  guessText: string;
+  submittedAt: number;
+  correct: boolean;
+  beatTheAI: boolean;
+};
+
 export type Turn = {
   teamId: string;
   assignedWords: Word[];
@@ -45,13 +71,15 @@ export type Turn = {
   candidatePool: Word[];
   aiScores: Record<string, number>;
   startedAt: number | null;
+  /** when the current word became live (for timeToSolveSec) */
+  wordStartedAt: number | null;
   durationSec: number;
   correctCount: number;
   status: 'waiting' | 'active' | 'ended';
-  /** true while showing the brief correct reveal */
   revealing: boolean;
-  /** words already revealed as correct this turn */
   solvedWords: Word[];
+  wordHistory: WordResult[];
+  audienceGuesses: AudienceGuess[];
 };
 
 export type RoomPhase =
@@ -65,26 +93,35 @@ export type RoomSettings = {
   turnDurationSec: number;
   wordsPerTeam: number;
   roundsPerTeam: number;
+  aiDifficulty: AiDifficulty;
+};
+
+export type GameAward = {
+  id: 'fastest' | 'confusing' | 'stone-cold' | 'audience-ace';
+  title: string;
+  detail: string;
+  playerName?: string;
+  teamName?: string;
+  wordText?: string;
 };
 
 export type Room = {
   code: string;
   hostId: string;
   teams: Team[];
-  /** flat player lookup by id */
   players: Record<string, Player>;
   turnOrder: string[];
   currentTurn: Turn | null;
   assignment: Assignment | null;
   submissions: WordSubmission[];
-  /** in-progress draft lists during submitting phase */
   draftWords: Record<string, Word[]>;
   phase: RoomPhase;
   settings: RoomSettings;
-  /** team ids that have completed a turn this round */
   completedTurnTeamIds: string[];
-  /** candidate texts used in pools this game (to avoid decoy repeats) */
   usedCandidateTexts: string[];
+  /** Aggregated WordResults across all turns this game */
+  allWordResults: WordResult[];
+  awards: GameAward[];
   lastTurnResult: {
     teamId: string;
     teamName: string;
@@ -95,3 +132,27 @@ export type Room = {
 };
 
 export type PublicRoom = Room;
+
+export const DIFFICULTY_CONFIG: Record<
+  AiDifficulty,
+  { threshold: number; holdTicks: number; label: string; blurb: string }
+> = {
+  rookie: {
+    threshold: 0.45,
+    holdTicks: 1,
+    label: 'Rookie',
+    blurb: 'Forgiving — Gawk commits faster',
+  },
+  standard: {
+    threshold: 0.55,
+    holdTicks: 2,
+    label: 'Standard',
+    blurb: 'Balanced default',
+  },
+  veteran: {
+    threshold: 0.65,
+    holdTicks: 3,
+    label: 'Veteran',
+    blurb: 'Needs sustained clarity',
+  },
+};

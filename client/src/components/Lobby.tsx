@@ -1,5 +1,9 @@
 import { useState } from 'react';
-import type { Room } from '@shared/types';
+import {
+  DIFFICULTY_CONFIG,
+  type AiDifficulty,
+  type Room,
+} from '@shared/types';
 
 type Props = {
   room: Room;
@@ -7,6 +11,7 @@ type Props = {
   onCreateTeam: (name: string) => Promise<void>;
   onJoinTeam: (teamId: string) => Promise<void>;
   onStart: () => Promise<void>;
+  onSetDifficulty: (d: AiDifficulty) => Promise<void>;
   error: string | null;
 };
 
@@ -16,6 +21,7 @@ export function Lobby({
   onCreateTeam,
   onJoinTeam,
   onStart,
+  onSetDifficulty,
   error,
 }: Props) {
   const [teamName, setTeamName] = useState('');
@@ -24,6 +30,7 @@ export function Lobby({
     (t) => t.playerIds.length >= 2 && t.playerIds.length <= 3,
   );
   const me = room.players[playerId];
+  const difficulty = room.settings.aiDifficulty;
 
   return (
     <div className="mx-auto min-h-dvh max-w-3xl px-4 py-8 animate-curtain">
@@ -55,6 +62,35 @@ export function Lobby({
           {error}
         </p>
       )}
+
+      <div className="stage-panel mb-6 rounded-2xl p-5">
+        <p className="label mb-2">AI difficulty</p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {(Object.keys(DIFFICULTY_CONFIG) as AiDifficulty[]).map((key) => {
+            const cfg = DIFFICULTY_CONFIG[key];
+            const active = difficulty === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={!isHost}
+                onClick={() => void onSetDifficulty(key)}
+                className={`flex-1 rounded-xl border-2 px-3 py-3 text-left transition ${
+                  active
+                    ? 'border-teal bg-teal/10'
+                    : 'border-ink/10 bg-white/60 hover:border-ink/20'
+                } ${!isHost ? 'cursor-default opacity-90' : ''}`}
+              >
+                <span className="block font-display font-bold">{cfg.label}</span>
+                <span className="text-xs text-slate">{cfg.blurb}</span>
+              </button>
+            );
+          })}
+        </div>
+        {!isHost && (
+          <p className="mt-2 text-xs text-slate">Only the host can change this.</p>
+        )}
+      </div>
 
       {!everyTeamValid && isHost && (
         <p className="mb-4 text-sm font-medium text-amber">
@@ -89,7 +125,7 @@ export function Lobby({
                           Host
                         </span>
                       )}
-                      {id === playerId && (
+                      {id === playerId && id !== room.hostId && (
                         <span className="ml-auto text-xs font-semibold text-teal-deep">
                           You
                         </span>
